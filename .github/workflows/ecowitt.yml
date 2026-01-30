@@ -1,13 +1,8 @@
 name: Ecowitt updater
 
 on:
-  # Executa quan fem canvis al repo (això evita dependre del botó "Run workflow")
-  push:
-    branches: [ "main" ]
-  # Executa automàticament cada 5 minuts (només a la branca per defecte)
   schedule:
     - cron: "*/5 * * * *"
-  # Permet execució manual (si GitHub t'ho deixa)
   workflow_dispatch:
 
 permissions:
@@ -18,15 +13,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: pip install requests
+      - name: Install deps
+        run: pip install requests
 
-      - name: Fetch Ecowitt data
+      - name: Fetch realtime from Ecowitt and append history
         env:
           APP_KEY: ${{ secrets.ECOWITT_APPLICATION_KEY }}
           API_KEY: ${{ secrets.ECOWITT_API_KEY }}
@@ -85,35 +83,36 @@ jobs:
                   return round(f_to_c(n), 2)
               return round(n, 2)
 
-          # wind_direction pot ser objecte: {"value":"267","unit":"º",...}
+          # Direcció del vent (value)
           wd = get_obj(["data","wind","wind_direction"])
           wind_dir = wd.get("value") if isinstance(wd, dict) else None
 
+          # --- Ratxa de vent (gust): prova múltiples camps ---
+          def read_gust():
+              for p in [
+                  ["data","wind","gust"],
+                  ["data","wind","wind_gust"],
+                  ["data","wind","gust_speed"],
+                  ["data","wind","max_gust"],
+                  ["data","wind","gust_10m"]
+              ]:
+                  obj = get_obj(p)
+                  if isinstance(obj, dict) and "value" in obj:
+                      try:
+                          return round(float(obj["value"]), 2)
+                      except:
+                          pass
+              return None
+
           ts = int(time.time() * 1000)
-# --- lectura robusta de ratxa de vent (gust) ---
-def read_gust():
-    for p in [
-        ["data","wind","gust"],
-        ["data","wind","wind_gust"],
-        ["data","wind","gust_speed"],
-        ["data","wind","max_gust"],
-        ["data","wind","gust_10m"]
-    ]:
-        obj = get_obj(p)
-        if isinstance(obj, dict) and "value" in obj:
-            try:
-                return round(float(obj["value"]), 2)
-            except:
-                pass
-    return None
-    
+
           point = {
               "ts": ts,
               "temp_c": read_temp_c(["data","outdoor","temperature"]),
               "hum_pct": read_num(["data","outdoor","humidity"]),
               "dew_c": read_temp_c(["data","outdoor","dew_point"]),
               "wind_kmh": read_num(["data","wind","wind_speed"]),
-              ""gust_kmh": read_gust(),
+              "gust_kmh": read_gust(),
               "wind_dir": wind_dir,
               "rain_day_mm": read_num(["data","rainfall","daily"]),
               "rain_rate_mmh": read_num(["data","rainfall","rate"])
