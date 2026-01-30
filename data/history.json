@@ -1,1 +1,5 @@
-[]
+[
+  {"ts": 1700000000000, "temp_c": 10.5, "hum_pct": 55, "dew_c": 1.6, "wind_kmh": 6, "gust_kmh": 12, "wind_dir": "NW", "rain_day_mm": 0, "rain_rate_mmh": 0},
+  {"ts": 1700003600000, "temp_c": 11.2, "hum_pct": 52, "dew_c": 1.9, "wind_kmh": 8, "gust_kmh": 14, "wind_dir": "N", "rain_day_mm": 0, "rain_rate_mmh": 0}
+]
+
