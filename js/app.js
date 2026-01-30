@@ -44,7 +44,8 @@ function buildChart(canvasId, labels, values){
 }
 
 async function loadHistory(){
-  const res = await fetch(HISTORY_URL, { cache: "no-store" });
+  const url = `${HISTORY_URL}?t=${Date.now()}`; // evita cache de GitHub Pages / navegador
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error("No puc carregar history.json");
   return await res.json();
 }
@@ -78,8 +79,13 @@ function renderCharts(history){
   chartHum  = buildChart("chartHum", labels, hums);
 }
 
-(async function init(){
-  setText("year", String(new Date().getFullYear()));
+setText("year", String(new Date().getFullYear()));
+
+let refreshing = false;
+
+async function refresh(){
+  if (refreshing) return; // evita solapaments si la xarxa va lenta
+  refreshing = true;
   try{
     const history = await loadHistory();
     if (!Array.isArray(history) || history.length === 0) {
@@ -92,5 +98,13 @@ function renderCharts(history){
   } catch (e){
     setText("lastUpdated", "Error carregant dades");
     console.error(e);
+  } finally {
+    refreshing = false;
   }
-})();
+}
+
+// 1a càrrega immediata
+refresh();
+
+// refresc automàtic cada 60 segons
+setInterval(refresh, 60_000);
