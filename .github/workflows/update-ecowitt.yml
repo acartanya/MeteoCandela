@@ -45,34 +45,47 @@ jobs:
           r.raise_for_status()
           j = r.json()
 
-          def deep_get(d, path, default=None):
-            cur = d
+          ts = int(time.time() * 1000)
+
+          # Ecowitt acostuma a retornar objectes del tipus:
+          # {"value":"11.8","unit":"°C","time":"..."}
+          def get_obj(path):
+            cur = j
             for k in path:
               if isinstance(cur, dict) and k in cur:
                 cur = cur[k]
               else:
-                return default
+                return None
             return cur
 
-          def to_num(x):
+          def get_value(path):
+            obj = get_obj(path)
+            if isinstance(obj, dict) and "value" in obj:
+              return obj["value"]
+            return None
+
+          def get_num(path):
+            v = get_value(path)
+            if v is None:
+              return None
             try:
-              return round(float(x), 2)
+              return round(float(v), 2)
             except Exception:
               return None
 
-          base = j.get("data", j)
-          ts = int(time.time() * 1000)
+          # Outdoor
+          temp_c = get_num(["data","outdoor","temperature"])
+          hum_pct = get_num(["data","outdoor","humidity"])
+          dew_c  = get_num(["data","outdoor","dew_point"])
 
-          temp_c = to_num(deep_get(j, ["data","outdoor","temperature"]) or deep_get(base, ["outdoor","temperature"]) or deep_get(base, ["temp"]))
-          hum_pct = to_num(deep_get(j, ["data","outdoor","humidity"]) or deep_get(base, ["outdoor","humidity"]) or deep_get(base, ["humidity"]))
-          dew_c  = to_num(deep_get(j, ["data","outdoor","dew_point"]) or deep_get(base, ["outdoor","dew_point"]) or deep_get(base, ["dew_point"]))
+          # Wind
+          wind_kmh = get_num(["data","wind","wind_speed"])
+          gust_kmh = get_num(["data","wind","gust"])
+          wind_dir = get_value(["data","wind","wind_direction"])  # p.ex. "341"
 
-          wind_kmh = to_num(deep_get(j, ["data","wind","wind_speed"]) or deep_get(base, ["wind","wind_speed"]) or deep_get(base, ["wind_speed"]))
-          gust_kmh = to_num(deep_get(j, ["data","wind","gust"]) or deep_get(base, ["wind","gust"]) or deep_get(base, ["gust"]))
-          wind_dir = (deep_get(j, ["data","wind","wind_direction"]) or deep_get(base, ["wind","wind_direction"]) or deep_get(base, ["wind_direction"]))
-
-          rain_day = to_num(deep_get(j, ["data","rainfall","daily"]) or deep_get(base, ["rainfall","daily"]) or deep_get(base, ["rain_day"]))
-          rain_rate = to_num(deep_get(j, ["data","rainfall","rate"]) or deep_get(base, ["rainfall","rate"]) or deep_get(base, ["rain_rate"]))
+          # Rain
+          rain_day = get_num(["data","rainfall","daily"])
+          rain_rate = get_num(["data","rainfall","rate"])
 
           point = {
             "ts": ts,
@@ -97,6 +110,7 @@ jobs:
 
           hist.append(point)
 
+          # Retenció ~3 dies (cada 5 min ≈ 864 punts)
           if len(hist) > 900:
             hist = hist[-900:]
 
