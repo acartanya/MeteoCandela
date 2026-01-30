@@ -1,1 +1,1 @@
-[{"ts": 1769789296384, "temp_c": 15.5, "hum_pct": 53.0, "dew_c": 5.94, "wind_kmh": 5.1, "gust_kmh": null, "wind_dir": "236", "rain_day_mm": null, "rain_rate_mmh": null}]
+[{"ts": 1769789296384, "temp_c": 15.5, "hum_pct": 53.0, "dew_c": 5.94, "wind_kmh": 5.1, "gust_kmh": null, "wind_dir": "236", "rain_day_mm": null, "rain_rate_mmh": null}, {"ts": 1769789335634, "temp_c": 15.39, "hum_pct": 54.0, "dew_c": 6.17, "wind_kmh": 2.7, "gust_kmh": null, "wind_dir": "184", "rain_day_mm": null, "rain_rate_mmh": null}]
