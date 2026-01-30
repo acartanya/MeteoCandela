@@ -21,7 +21,7 @@ jobs:
 
       - run: pip install requests
 
-      - name: Fetch Ecowitt data
+            - name: Fetch Ecowitt data
         env:
           APP_KEY: ${{ secrets.ECOWITT_APPLICATION_KEY }}
           API_KEY: ${{ secrets.ECOWITT_API_KEY }}
@@ -42,52 +42,78 @@ jobs:
           r.raise_for_status()
           j = r.json()
 
-          def read(path):
+          def get_obj(path):
               cur = j
               for p in path:
                   if isinstance(cur, dict) and p in cur:
                       cur = cur[p]
                   else:
                       return None
-              if isinstance(cur, dict):
-                  return cur.get("value")
               return cur
 
-          def num(x):
+          def get_value_unit(path):
+              obj = get_obj(path)
+              if isinstance(obj, dict):
+                  return obj.get("value"), obj.get("unit")
+              return None, None
+
+          def to_float(x):
               try:
-                  return round(float(x), 2)
+                  return float(x)
               except:
                   return None
+
+          def f_to_c(f):
+              return (f - 32.0) * 5.0 / 9.0
+
+          def read_num(path):
+              v, _u = get_value_unit(path)
+              n = to_float(v)
+              return round(n, 2) if n is not None else None
+
+          def read_temp_c(path):
+              v, u = get_value_unit(path)
+              n = to_float(v)
+              if n is None:
+                  return None
+              # Si Ecowitt diu que és Fahrenheit, convertim a Celsius
+              if u and "F" in str(u):
+                  return round(f_to_c(n), 2)
+              return round(n, 2)
 
           ts = int(time.time() * 1000)
 
           point = {
               "ts": ts,
-              "temp_c": num(read(["data","outdoor","temperature"])),
-              "hum_pct": num(read(["data","outdoor","humidity"])),
-              "dew_c": num(read(["data","outdoor","dew_point"])),
-              "wind_kmh": num(read(["data","wind","wind_speed"])),
-              "gust_kmh": num(read(["data","wind","gust"])),
-              "wind_dir": read(["data","wind","wind_direction"]),
-              "rain_day_mm": num(read(["data","rainfall","daily"])),
-              "rain_rate_mmh": num(read(["data","rainfall","rate"]))
+              "temp_c": read_temp_c(["data","outdoor","temperature"]),
+              "hum_pct": read_num(["data","outdoor","humidity"]),
+              "dew_c": read_temp_c(["data","outdoor","dew_point"]),
+              "wind_kmh": read_num(["data","wind","wind_speed"]),
+              "gust_kmh": read_num(["data","wind","gust"]),
+              # wind_direction pot ser objecte; agafem només value
+              "wind_dir": (get_obj(["data","wind","wind_direction"]) or {}).get("value"),
+              "rain_day_mm": read_num(["data","rainfall","daily"]),
+              "rain_rate_mmh": read_num(["data","rainfall","rate"])
           }
 
           path = "data/history.json"
           try:
-              with open(path) as f:
+              with open(path, "r", encoding="utf-8") as f:
                   hist = json.load(f)
+              if not isinstance(hist, list):
+                  hist = []
           except:
               hist = []
 
           hist.append(point)
           hist = hist[-900:]
 
-          with open(path, "w") as f:
-              json.dump(hist, f)
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(hist, f, ensure_ascii=False)
 
           print("OK:", point)
           PY
+
 
       - name: Commit
         run: |
