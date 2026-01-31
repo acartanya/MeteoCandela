@@ -3,9 +3,8 @@ name: Ecowitt updater
 on:
   workflow_dispatch:
   schedule:
+    # Cada 5 minuts (UTC). Mantén-ne només un per evitar carreres i 'fetch first'.
     - cron: "*/5 * * * *"
-    - cron: "1-59/5 * * * *"
-    - cron: "2-59/5 * * * *"
 
 concurrency:
   group: ecowitt-updater
@@ -21,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # IMPORTANT: necessari per fer pull --rebase sense problemes
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -184,12 +185,35 @@ jobs:
 
       - name: Commit & push (only if changed)
         run: |
+          set -e
+
           if git diff --quiet; then
             echo "No changes to commit."
             exit 0
           fi
+
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
+
           git add data/history.json heartbeat/heartbeat.json
-          git commit -m "Update meteo data"
-          git push
+          git commit -m "Update meteo data" || true
+
+          # Evita 'fetch first' si el remot ha canviat entre checkout i push
+          git pull --rebase origin main
+
+          # Re-assegura que els fitxers que ens importen queden staged i commitejats
+          git add data/history.json heartbeat/heartbeat.json
+          git commit -m "Update meteo data" || true
+
+          # Push amb reintents (per carreres puntuals)
+          for i in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Push OK"
+              exit 0
+            fi
+            echo "Push fallit (intent $i). Reintentant..."
+            git pull --rebase origin main
+          done
+
+          echo "ERROR: No s'ha pogut fer push després de reintents."
+          exit 1
