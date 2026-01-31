@@ -2,10 +2,13 @@
 <html lang="ca">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta http-equiv="refresh" content="0; url=/MeteoCandela/" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=./MeteoCandela/" />
   <title>Meteo Valls</title>
-  <script>location.replace("/MeteoCandela/");</script>
+  <script>
+    // fallback per navegadors que ignoren meta refresh
+    window.location.replace("./MeteoCandela/");
+  </script>
 </head>
-<body>Redirigint…</body>
+<body></body>
 </html>
