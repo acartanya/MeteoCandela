@@ -1,30 +1,30 @@
 name: Ecowitt updater
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
+  schedule:
+    # Intent 1: cada 5 minuts (UTC)
+    - cron: "*/5 * * * *"
+    # Intent 2: desfasat +1 minut
+    - cron: "1-59/5 * * * *"
+    # Intent 3: desfasat +2 minuts
+    - cron: "2-59/5 * * * *"
+
+# Evita cues i “embussos”: si entra un nou trigger, cancel·la el run anterior si encara està corrent
+concurrency:
+  group: ecowitt-updater
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
-concurrency:
-  group: ecowitt-updater
-  cancel-in-progress: false   # IMPORTANT: no cancel·lis execucions (millor acumular retard que perdre runs)
-
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Pull latest (avoid drift)
-        run: |
-          git pull --rebase
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,141 +32,139 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install requests
-
-      - name: Fetch Ecowitt realtime and append history + heartbeat
-        env:
-          APP_KEY: ${{ secrets.ECOWITT_APPLICATION_KEY }}
-          API_KEY: ${{ secrets.ECOWITT_API_KEY }}
-          MAC: ${{ secrets.ECOWITT_MAC }}
         run: |
-          python - << 'PY'
+          python -m pip install --upgrade pip
+          # Si no tens requirements.txt, això no fallarà; simplement no instal·larà res extra
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Fetch Ecowitt realtime and append history
+        env:
+          # Si ja ho tens definit com a Secrets al repo, mantén aquests noms
+          ECOWITT_APPLICATION_KEY: ${{ secrets.ECOWITT_APPLICATION_KEY }}
+          ECOWITT_API_KEY: ${{ secrets.ECOWITT_API_KEY }}
+          ECOWITT_MAC: ${{ secrets.ECOWITT_MAC }}
+        run: |
+          python - <<'PY'
           import json, os, time
-          import requests
           from datetime import datetime, timezone
+          from pathlib import Path
+          import urllib.request
+          import urllib.parse
 
-          OUT_PATH = "MeteoCandela/data/history.json"
-          HEART_PATH = "MeteoCandela/data/heartbeat.json"
-          URL = "https://api.ecowitt.net/api/v3/device/real_time"
+          # ====== AJUSTA AQUESTES RUTES SI LES TENS DIFERENTS ======
+          BASE = Path("MeteoCandela")
+          HISTORY_PATH = BASE / "data" / "history.json"
+          HEARTBEAT_DIR = BASE / "heartbeat"
+          HEARTBEAT_PATH = HEARTBEAT_DIR / "heartbeat.json"
+          # =========================================================
 
-          def deep_get(d, path):
-            cur = d
-            for k in path:
-              if isinstance(cur, dict) and k in cur:
-                cur = cur[k]
-              else:
-                return None
+          app_key = os.getenv("ECOWITT_APPLICATION_KEY")
+          api_key = os.getenv("ECOWITT_API_KEY")
+          mac = os.getenv("ECOWITT_MAC")
+
+          if not (app_key and api_key and mac):
+            raise SystemExit("Falten secrets: ECOWITT_APPLICATION_KEY / ECOWITT_API_KEY / ECOWITT_MAC")
+
+          # Endpoint habitual d'Ecowitt (si al teu codi ja funciona, mantenim això)
+          # Si tu uses un altre endpoint internament, digues-m'ho i l'ajusto.
+          base_url = "https://api.ecowitt.net/api/v3/device/real_time"
+          params = {
+            "application_key": app_key,
+            "api_key": api_key,
+            "mac": mac,
+            "call_back": "all"
+          }
+          url = base_url + "?" + urllib.parse.urlencode(params)
+
+          with urllib.request.urlopen(url, timeout=20) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+
+          # ---------- Normalització mínima de camps ----------
+          # IMPORTANT: això és tolerant; si algun camp no hi és, queda a null.
+          data = payload.get("data", {}) if isinstance(payload, dict) else {}
+          # Alguns dispositius posen "outdoor" o "temp" dins de subclaus; ho fem robust.
+          def pick(*keys):
+            cur = data
+            for k in keys:
+              if not isinstance(cur, dict) or k not in cur: return None
+              cur = cur[k]
             return cur
 
-          def unwrap(obj):
-            if isinstance(obj, dict):
-              return obj.get("value"), obj.get("unit")
-            return obj, None
-
-          def to_float(x):
+          # Temperatura/humitat (molts retorns venen com strings)
+          def fnum(x):
             try:
               return float(x)
             except Exception:
               return None
 
-          def c_from(value, unit):
-            n = to_float(value)
-            if n is None:
-              return None
-            u = (unit or "").upper()
-            if "F" in u:
-              return round((n - 32.0) * 5.0 / 9.0, 2)
-            return round(n, 2)
+          # Prova camins típics
+          temp_c = fnum(pick("outdoor", "temperature", "value")) or fnum(pick("temp", "value")) or fnum(pick("temperature", "value"))
+          hum_pct = fnum(pick("outdoor", "humidity", "value")) or fnum(pick("humidity", "value"))
 
-          def kmh_from(value, unit):
-            n = to_float(value)
-            if n is None:
-              return None
-            u = (unit or "").lower()
-            if "km" in u:
-              return round(n, 2)
-            if "mph" in u:
-              return round(n * 1.609344, 2)
-            if "m/s" in u or u == "ms":
-              return round(n * 3.6, 2)
-            return round(n, 2)
+          # Punt de rosada
+          dew_c = fnum(pick("outdoor", "dew_point", "value")) or fnum(pick("dew_point", "value"))
 
-          def mm_from(value, unit):
-            n = to_float(value)
-            if n is None:
-              return None
-            return round(n, 2)
+          # Vent (km/h)
+          wind_kmh = fnum(pick("wind_speed", "value")) or fnum(pick("wind", "wind_speed", "value"))
+          gust_kmh = fnum(pick("wind_gust", "value")) or fnum(pick("wind", "wind_gust", "value"))
+          wind_dir = pick("wind_direction", "value") or pick("wind", "wind_direction", "value")
 
-          params = {
-            "application_key": os.environ["APP_KEY"],
-            "api_key": os.environ["API_KEY"],
-            "mac": os.environ["MAC"],
-            "call_back": "all"
+          # Pluja (mm)
+          rain_day_mm = fnum(pick("rainfall_daily", "value")) or fnum(pick("rainfall", "daily", "value"))
+          rain_rate_mmh = fnum(pick("rain_rate", "value")) or fnum(pick("rainfall", "rate", "value"))
+
+          now_ms = int(time.time() * 1000)
+          row = {
+            "ts": now_ms,
+            "temp_c": temp_c,
+            "hum_pct": hum_pct,
+            "dew_c": dew_c,
+            "wind_kmh": wind_kmh,
+            "gust_kmh": gust_kmh,
+            "wind_dir": str(wind_dir) if wind_dir is not None else None,
+            "rain_day_mm": rain_day_mm,
+            "rain_rate_mmh": rain_rate_mmh,
           }
 
-          r = requests.get(URL, params=params, timeout=30)
-          r.raise_for_status()
-          j = r.json()
-          data = j.get("data", j)
-
-          ts = int(time.time() * 1000)
-
-          temp_v, temp_u = unwrap(deep_get(data, ["outdoor","temperature"]))
-          hum_v, hum_u   = unwrap(deep_get(data, ["outdoor","humidity"]))
-          dew_v, dew_u   = unwrap(deep_get(data, ["outdoor","dew_point"]))
-
-          ws_v, ws_u     = unwrap(deep_get(data, ["wind","wind_speed"]))
-          gust_v, gust_u = unwrap(deep_get(data, ["wind","wind_gust"])) or (None, None)
-          wd_v, wd_u     = unwrap(deep_get(data, ["wind","wind_direction"]))
-
-          rd_v, rd_u     = unwrap(deep_get(data, ["rainfall","daily"]))
-          rr_v, rr_u     = unwrap(deep_get(data, ["rainfall","rate"]))
-
-          point = {
-            "ts": ts,
-            "temp_c": c_from(temp_v, temp_u),
-            "hum_pct": round(to_float(hum_v), 2) if to_float(hum_v) is not None else None,
-            "dew_c": c_from(dew_v, dew_u),
-            "wind_kmh": kmh_from(ws_v, ws_u),
-            "gust_kmh": kmh_from(gust_v, gust_u),
-            "wind_dir": str(wd_v) if wd_v is not None else None,
-            "rain_day_mm": mm_from(rd_v, rd_u),
-            "rain_rate_mmh": mm_from(rr_v, rr_u)
-          }
-
-          # history
-          try:
-            with open(OUT_PATH, "r", encoding="utf-8") as f:
-              hist = json.load(f)
-            if not isinstance(hist, list):
+          # ---------- Carrega històric, afegeix i retalla a 24h ----------
+          HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+          if HISTORY_PATH.exists():
+            try:
+              hist = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+              if not isinstance(hist, list): hist = []
+            except Exception:
               hist = []
-          except FileNotFoundError:
+          else:
             hist = []
 
-          hist.append(point)
-          hist = hist[-1200:]  # ~3-4 dies a 5 min
+          hist.append(row)
 
-          os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-          with open(OUT_PATH, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False)
+          # Retalla a les últimes 24h (24*60*60*1000)
+          cutoff = now_ms - 24*60*60*1000
+          hist = [h for h in hist if isinstance(h, dict) and h.get("ts", 0) >= cutoff]
 
-          # heartbeat
+          HISTORY_PATH.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
+
+          # ---------- Heartbeat (per saber quan ha corregut el workflow) ----------
+          HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
           hb = {
-            "run_ts": ts,
-            "run_iso_utc": datetime.now(timezone.utc).isoformat(),
+            "run_ts": now_ms,
+            "run_iso_utc": datetime.now(timezone.utc).isoformat()
           }
-          os.makedirs(os.path.dirname(HEART_PATH), exist_ok=True)
-          with open(HEART_PATH, "w", encoding="utf-8") as f:
-            json.dump(hb, f, ensure_ascii=False)
+          HEARTBEAT_PATH.write_text(json.dumps(hb, ensure_ascii=False), encoding="utf-8")
 
-          print("OK appended:", point)
+          print("OK appended:", row)
           print("Heartbeat:", hb)
           PY
 
-      - name: Commit & push
+      - name: Commit & push (only if changed)
         run: |
+          if git diff --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add MeteoCandela/data/history.json MeteoCandela/data/heartbeat.json
-          git commit -m "Update meteo data" || echo "No changes"
+          git add MeteoCandela/data/history.json MeteoCandela/heartbeat/heartbeat.json
+          git commit -m "Update meteo data"
           git push
