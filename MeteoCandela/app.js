@@ -2,35 +2,33 @@ const HISTORY_URL = "data/history.json";
 
 let chartTemp = null;
 let chartHum = null;
+let refreshing = false;
+let lastSeenTs = null;
 
-function degToCardinal(deg) {
+function degToCardinal(deg){
   const d = Number(deg);
   if (!Number.isFinite(d)) return "—";
   const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
-  return dirs[Math.round(d / 22.5) % 16];
+  return dirs[Math.round(d/22.5) % 16];
 }
 
-function fmtTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleString("ca-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function setText(id, value) {
+function setText(id, value){
   const el = document.getElementById(id);
   if (el) el.textContent = value;
 }
 
-function safeNum(x) {
+function fmtTime(ts){
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return "—";
+  return d.toLocaleString("ca-ES", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+}
+
+function toNum(x){
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
 }
 
-async function loadHistory() {
+async function loadHistory(){
   // cache-buster + no-store
   const url = `${HISTORY_URL}?t=${Date.now()}`;
   const res = await fetch(url, { cache: "no-store" });
@@ -39,25 +37,34 @@ async function loadHistory() {
   return Array.isArray(data) ? data : [];
 }
 
-function renderCurrent(last) {
+function renderCurrent(last){
   setText("temp", last.temp_c ?? "—");
   setText("hum", last.hum_pct ?? "—");
   setText("wind", last.wind_kmh ?? "—");
   setText("rainDay", last.rain_day_mm ?? "0.0");
 
-  const dew = last.dew_c != null ? `${last.dew_c} °C` : "—";
-  setText("tempSub", `Punt de rosada: ${dew}`);
-  setText("dewSub", `Punt de rosada: ${dew}`);
+  const dewTxt = (last.dew_c == null) ? "—" : `${last.dew_c} °C`;
+  setText("tempSub", `Punt de rosada: ${dewTxt}`);
 
-  const gust = last.gust_kmh ?? "—";
-  const wdir = last.wind_dir ?? "—";
-  setText("gustSub", `Ratxa: ${gust} km/h · Dir: ${degToCardinal(wdir)} (${wdir}º)`);
+  const gustTxt = (last.gust_kmh == null) ? "N/D" : `${last.gust_kmh}`;
+  const dirDeg = (last.wind_dir == null) ? null : toNum(last.wind_dir);
+  const dirTxt = (dirDeg == null) ? "—" : `${Math.round(dirDeg)}º`;
+  const dirCard = (dirDeg == null) ? "—" : degToCardinal(dirDeg);
 
-  setText("rainRateSub", `Intensitat: ${last.rain_rate_mmh ?? "0.0"} mm/h`);
+  setText("gustSub", `Ratxa: ${gustTxt} km/h · Dir: ${dirCard} (${dirTxt})`);
+
+  const rr = (last.rain_rate_mmh == null) ? "0.0" : `${last.rain_rate_mmh}`;
+  setText("rainRateSub", `Intensitat: ${rr} mm/h`);
+
   setText("lastUpdated", `Actualitzat: ${fmtTime(last.ts)}`);
 }
 
-function buildChart(canvasId, labels, values) {
+function destroyCharts(){
+  if (chartTemp) { chartTemp.destroy(); chartTemp = null; }
+  if (chartHum)  { chartHum.destroy();  chartHum  = null; }
+}
+
+function buildChart(canvasId, labels, values, suggestedMin, suggestedMax){
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
 
@@ -69,7 +76,8 @@ function buildChart(canvasId, labels, values) {
         data: values,
         tension: 0.25,
         pointRadius: 0,
-        borderWidth: 2
+        borderWidth: 2,
+        spanGaps: true
       }]
     },
     options: {
@@ -79,69 +87,86 @@ function buildChart(canvasId, labels, values) {
       plugins: { legend: { display: false } },
       scales: {
         x: { ticks: { maxTicksLimit: 8 } },
-        y: { ticks: { maxTicksLimit: 6 } }
+        y: {
+          ticks: { maxTicksLimit: 6 },
+          suggestedMin,
+          suggestedMax
+        }
       }
     }
   });
 }
 
-function renderCharts(history) {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+function renderCharts(history){
+  const cutoff = Date.now() - 24*60*60*1000;
 
-  // Filtra últimes 24h i elimina punts sense valor (null/NaN), perquè Chart.js no es torni boig
+  // Ordena i limita per rendiment
   const last24 = history
-    .filter(p => p.ts >= cutoff)
-    .sort((a,b) => a.ts - b.ts);
+    .filter(p => toNum(p?.ts) != null && p.ts >= cutoff)
+    .sort((a,b) => a.ts - b.ts)
+    .slice(-600);
 
-  const pointsTemp = last24
-    .map(p => ({ ts: p.ts, v: safeNum(p.temp_c) }))
-    .filter(p => p.v != null);
+  // Construeix sèries; deixem null si falta valor, però calculem min/max només amb valors reals
+  const labels = last24.map(p =>
+    new Date(p.ts).toLocaleTimeString("ca-ES", { hour:"2-digit", minute:"2-digit" })
+  );
 
-  const pointsHum = last24
-    .map(p => ({ ts: p.ts, v: safeNum(p.hum_pct) }))
-    .filter(p => p.v != null);
+  const temps = last24.map(p => {
+    const v = toNum(p.temp_c);
+    return v == null ? null : v;
+  });
 
-  const labelsTemp = pointsTemp.map(p => new Date(p.ts).toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" }));
-  const valuesTemp = pointsTemp.map(p => p.v);
+  const hums = last24.map(p => {
+    const v = toNum(p.hum_pct);
+    return v == null ? null : v;
+  });
 
-  const labelsHum = pointsHum.map(p => new Date(p.ts).toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" }));
-  const valuesHum = pointsHum.map(p => p.v);
+  const tVals = temps.filter(v => v != null);
+  const hVals = hums.filter(v => v != null);
 
-  if (chartTemp) chartTemp.destroy();
-  if (chartHum) chartHum.destroy();
+  destroyCharts();
 
-  chartTemp = buildChart("chartTemp", labelsTemp, valuesTemp);
-  chartHum  = buildChart("chartHum", labelsHum, valuesHum);
+  // Evita gràfics “buits” o eixos bojos
+  if (labels.length < 2 || tVals.length < 2){
+    return;
+  }
 
-  // Si no hi ha punts, almenys no mostrem “gràfic boig”
-  if (!valuesTemp.length) console.warn("Sense dades de temperatura per graficar (24h).");
-  if (!valuesHum.length) console.warn("Sense dades d'humitat per graficar (24h).");
+  const tMin = Math.min(...tVals);
+  const tMax = Math.max(...tVals);
+  const tPad = Math.max(1, (tMax - tMin) * 0.15);
+  chartTemp = buildChart("chartTemp", labels, temps, tMin - tPad, tMax + tPad);
+
+  if (hVals.length >= 2){
+    const hMin = Math.min(...hVals);
+    const hMax = Math.max(...hVals);
+    const hPad = Math.max(3, (hMax - hMin) * 0.15);
+    chartHum = buildChart("chartHum", labels, hums, Math.max(0, hMin - hPad), Math.min(100, hMax + hPad));
+  }
 }
 
-let refreshing = false;
-let lastSeenTs = null;
-
-async function refresh() {
+async function refresh(){
   if (refreshing) return;
   refreshing = true;
 
-  try {
+  try{
+    setText("year", String(new Date().getFullYear()));
     const history = await loadHistory();
-    if (!history.length) {
+    if (!history.length){
       setText("lastUpdated", "Encara sense dades (espera la primera actualització)");
+      destroyCharts();
       return;
     }
 
     const last = history[history.length - 1];
 
-    // només re-render si hi ha canvi real
+    // Si no hi ha punt nou, no cal redibuixar (evita “parpelleig”)
     if (lastSeenTs === last.ts) return;
     lastSeenTs = last.ts;
 
     renderCurrent(last);
     renderCharts(history);
 
-  } catch (e) {
+  } catch (e){
     console.error(e);
     setText("lastUpdated", "Error carregant dades");
   } finally {
@@ -152,6 +177,4 @@ async function refresh() {
 // init
 setText("year", String(new Date().getFullYear()));
 refresh();
-
-// refresc automàtic (cada 60s)
 setInterval(refresh, 60_000);
