@@ -37,7 +37,7 @@ jobs:
           MAC: ${{ secrets.ECOWITT_MAC }}
         run: |
           python - << 'PY'
-          import json, os, time
+          import json, os, time, math
           import requests
 
           OUT_PATH = "MeteoCandela/data/history.json"
@@ -53,50 +53,73 @@ jobs:
             return cur
 
           def unwrap(obj):
-            # Ecowitt: sovint {"value":"12.3","unit":"C","time":"..."}
+            # Ecowitt sovint {"value":"12.3","unit":"C","time":"..."}
             if isinstance(obj, dict):
               return obj.get("value"), obj.get("unit")
             return obj, None
 
           def to_float(x):
+            if x is None:
+              return None
+            if isinstance(x, str):
+              s = x.strip().lower()
+              if s in ("", "none", "null", "-", "nan"):
+                return None
             try:
               return float(x)
             except Exception:
               return None
+
+          def round2(x):
+            return None if x is None else round(x, 2)
 
           def c_from(value, unit):
             n = to_float(value)
             if n is None:
               return None
             u = (unit or "").upper()
-            # Ecowitt acostuma a portar "°F", "F", "°C", "C"
+            # Accepta "°F", "F", "°C", "C"
             if "F" in u:
-              return round((n - 32.0) * 5.0 / 9.0, 2)
-            return round(n, 2)
+              return round2((n - 32.0) * 5.0 / 9.0)
+            return round2(n)
 
           def kmh_from(value, unit):
             n = to_float(value)
             if n is None:
               return None
             u = (unit or "").lower()
-            # Si ja és km/h o "km/h"
-            if "km" in u:
-              return round(n, 2)
-            # mph -> km/h
-            if "mph" in u:
-              return round(n * 1.609344, 2)
-            # m/s -> km/h
-            if "m/s" in u or "ms" == u:
-              return round(n * 3.6, 2)
-            # si no sabem unitat, assumim que ja és km/h (millor que inventar)
-            return round(n, 2)
+            if "km" in u:           # km/h
+              return round2(n)
+            if "mph" in u:          # mph -> km/h
+              return round2(n * 1.609344)
+            if "m/s" in u or u == "ms":  # m/s -> km/h
+              return round2(n * 3.6)
+            # fallback: assumeix que ja és km/h
+            return round2(n)
 
           def mm_from(value, unit):
             n = to_float(value)
             if n is None:
               return None
-            # Ecowitt pluja normalment mm
-            return round(n, 2)
+            u = (unit or "").lower()
+            # si vingués en inches (alguns comptes), ho podríem convertir:
+            if u in ("in", "inch", "in/h"):
+              return round2(n * 25.4)
+            return round2(n)
+
+          def find_gust(wind_obj):
+            """Troba ratxa buscant múltiples claus típiques o qualsevol que contingui 'gust'."""
+            if not isinstance(wind_obj, dict):
+              return None, None
+            # claus típiques
+            for k in ("gust", "wind_gust", "gust_speed", "max_gust", "gust_10m", "windGust", "windgust"):
+              if k in wind_obj:
+                return wind_obj[k], k
+            # qualsevol clau que contingui "gust"
+            for k, v in wind_obj.items():
+              if "gust" in str(k).lower():
+                return v, k
+            return None, None
 
           # Call API
           params = {
@@ -113,31 +136,36 @@ jobs:
 
           ts = int(time.time() * 1000)
 
+          outdoor = data.get("outdoor", {}) if isinstance(data, dict) else {}
+          wind = data.get("wind", {}) if isinstance(data, dict) else {}
+          rain = data.get("rainfall", {}) if isinstance(data, dict) else {}
+
           # Outdoor
-          temp_v, temp_u = unwrap(deep_get(data, ["outdoor","temperature"]))
-          hum_v, hum_u   = unwrap(deep_get(data, ["outdoor","humidity"]))
-          dew_v, dew_u   = unwrap(deep_get(data, ["outdoor","dew_point"]))
+          temp_v, temp_u = unwrap(outdoor.get("temperature"))
+          hum_v, hum_u   = unwrap(outdoor.get("humidity"))
+          dew_v, dew_u   = unwrap(outdoor.get("dew_point"))
 
           # Wind
-          ws_v, ws_u     = unwrap(deep_get(data, ["wind","wind_speed"]))
-          gust_v, gust_u = unwrap(deep_get(data, ["wind","gust"]))
-          wd_obj         = deep_get(data, ["wind","wind_direction"])
-          wd_v, wd_u     = unwrap(wd_obj)
+          ws_v, ws_u = unwrap(wind.get("wind_speed"))
+          wd_v, wd_u = unwrap(wind.get("wind_direction"))
 
-          # Rain (pot ser null si el sensor no en té)
-          rd_v, rd_u     = unwrap(deep_get(data, ["rainfall","daily"]))
-          rr_v, rr_u     = unwrap(deep_get(data, ["rainfall","rate"]))
+          gust_raw, gust_key = find_gust(wind)
+          gust_v, gust_u = unwrap(gust_raw) if gust_raw is not None else (None, None)
+
+          # Rain
+          rd_v, rd_u = unwrap(rain.get("daily"))
+          rr_v, rr_u = unwrap(rain.get("rate"))
 
           point = {
             "ts": ts,
             "temp_c": c_from(temp_v, temp_u),
-            "hum_pct": round(to_float(hum_v), 2) if to_float(hum_v) is not None else None,
+            "hum_pct": round2(to_float(hum_v)),
             "dew_c": c_from(dew_v, dew_u),
             "wind_kmh": kmh_from(ws_v, ws_u),
             "gust_kmh": kmh_from(gust_v, gust_u),
-            "wind_dir": str(wd_v) if wd_v is not None else None,   # graus com string
+            "wind_dir": str(wd_v) if wd_v is not None else None,
             "rain_day_mm": mm_from(rd_v, rd_u),
-            "rain_rate_mmh": mm_from(rr_v, rr_u)
+            "rain_rate_mmh": mm_from(rr_v, rr_u),
           }
 
           # Load history
@@ -150,15 +178,15 @@ jobs:
             hist = []
 
           hist.append(point)
-
-          # Mantén ~3 dies a 5 min (3*24*12=864). Guardem 1200 per marge.
-          hist = hist[-1200:]
+          hist = hist[-1200:]  # ~4 dies a 5 min
 
           os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
           with open(OUT_PATH, "w", encoding="utf-8") as f:
             json.dump(hist, f, ensure_ascii=False)
 
           print("OK appended:", point)
+          print("DEBUG gust key:", gust_key if gust_key else "(not found)")
+          print("DEBUG wind keys:", sorted(list(wind.keys())) if isinstance(wind, dict) else "no_wind_dict")
           PY
 
       - name: Commit & push
