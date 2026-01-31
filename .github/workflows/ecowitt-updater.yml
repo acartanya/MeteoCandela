@@ -156,7 +156,10 @@ jobs:
 
           data = payload.get("data") or payload.get("datas") or payload.get("result") or payload.get("records")
           if data is None:
-              raise SystemExit("No he trobat 'data' a la resposta. Payload keys: " + ", ".join(payload.keys()))
+    print("Ecowitt: cap dada nova encara (data=null).")
+    write_heartbeat(now_ms)
+    print("Heartbeat escrit. Sortida neta.")
+    exit(0)
 
           if isinstance(data, dict):
               data_list = data.get("list") or data.get("data") or data.get("records")
