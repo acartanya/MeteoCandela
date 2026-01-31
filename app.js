@@ -31,17 +31,22 @@
     }).format(d);
   }
 
-  // Converteix graus a punt cardinal (N, NNE, NE, ...)
-  function degToCompass(deg) {
+  // Converteix graus a nom de vent en català (8 sectors) amb Garbí
+  function degToWindCatalan(deg) {
     if (deg == null || Number.isNaN(Number(deg))) return "—";
-    const dirs = [
-      "N","NNE","NE","ENE",
-      "E","ESE","SE","SSE",
-      "S","SSW","SW","WSW",
-      "W","WNW","NW","NNW"
-    ];
-    const i = Math.round(Number(deg) / 22.5) % 16;
-    return dirs[i];
+
+    const d = ((Number(deg) % 360) + 360) % 360;
+
+    if (d >= 337.5 || d < 22.5)   return "N – Tramuntana";
+    if (d >= 22.5  && d < 67.5)   return "NE – Gregal";
+    if (d >= 67.5  && d < 112.5)  return "E – Llevant";
+    if (d >= 112.5 && d < 157.5)  return "SE – Xaloc";
+    if (d >= 157.5 && d < 202.5)  return "S – Migjorn";
+    if (d >= 202.5 && d < 247.5)  return "SW – Garbí";
+    if (d >= 247.5 && d < 292.5)  return "W – Ponent";
+    if (d >= 292.5 && d < 337.5)  return "NW – Mestral";
+
+    return "—";
   }
 
   function normalizeRow(r) {
@@ -110,7 +115,6 @@
     const wind = r24.map(r => r.wind_kmh);
     const gust = r24.map(r => r.gust_kmh);
 
-    // Opcions comunes + TOOLTIP només valor i unitat (sense hora)
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
@@ -144,12 +148,10 @@
       }
     };
 
-    // Destrueix gràfics anteriors si recarregues (evita duplicats)
     if (window.__chartTemp) window.__chartTemp.destroy();
     if (window.__chartHum) window.__chartHum.destroy();
     if (window.__chartWind) window.__chartWind.destroy();
 
-    // Temperatura
     window.__chartTemp = new Chart($("chartTemp"), {
       type: "line",
       data: {
@@ -169,7 +171,6 @@
       options: commonOpts
     });
 
-    // Humitat
     window.__chartHum = new Chart($("chartHum"), {
       type: "line",
       data: {
@@ -192,7 +193,6 @@
       }
     });
 
-    // Vent + Ratxa
     const windCanvas = $("chartWind");
     if (windCanvas) {
       window.__chartWind = new Chart(windCanvas, {
@@ -200,7 +200,6 @@
         data: {
           labels,
           datasets: [
-            // Vent sostingut (àrea)
             {
               label: "vent",
               data: wind,
@@ -213,7 +212,6 @@
               borderWidth: 2.5,
               fill: true
             },
-            // Ratxa (línia discontínua, més fina)
             {
               label: "ratxa",
               data: gust,
@@ -245,11 +243,11 @@
         last.dew_c == null ? "Punt de rosada: —" : `Punt de rosada: ${fmt1(last.dew_c)} °C`;
     }
 
-    // Direcció: graus + símbol + cardinal
+    // Direcció: graus + símbol + nom de vent català
     let dirTxt = "—";
     if (last.wind_dir != null && last.wind_dir !== "") {
       const deg = Number(last.wind_dir);
-      if (!Number.isNaN(deg)) dirTxt = `${deg}° (${degToCompass(deg)})`;
+      if (!Number.isNaN(deg)) dirTxt = `${deg.toFixed(0)}° (${degToWindCatalan(deg)})`;
     }
 
     if ($("gustSub")) {
