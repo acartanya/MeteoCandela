@@ -1,62 +1,102 @@
-const HISTORY_URL = "data/history.json";
+"use strict";
+
+const HISTORY_URL = "./data/history.json";
+const REFRESH_MS = 60_000; // 60s (la web refresca; l'Action pot ser cada 5 min)
 
 let chartTemp = null;
-let chartHum  = null;
+let chartHum = null;
+
+let lastSeenTs = null;
 let refreshing = false;
 
-/** Converteix graus a punt cardinal (N, NNE, ...) */
 function degToCardinal(deg){
   const d = Number(deg);
   if (!Number.isFinite(d)) return "—";
   const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
-  return dirs[Math.round(d / 22.5) % 16];
+  return dirs[Math.round(d/22.5) % 16];
 }
 
-/** Formata hora i data en català */
 function fmtTime(ts){
-  const d = new Date(ts);
-  if (!Number.isFinite(d.getTime())) return "—";
-  return d.toLocaleString("ca-ES", {
-    hour: "2-digit",
-    minute: "2-digit",
-    day: "2-digit",
-    month: "2-digit"
-  });
+  const d = new Date(Number(ts));
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ca-ES", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
 }
 
-/** Escriu text a un element */
 function setText(id, value){
   const el = document.getElementById(id);
-  if (el) el.textContent = String(value);
+  if (el) el.textContent = value;
 }
 
-/** Converteix a número si es pot */
-function toNum(x){
+function toFiniteNumber(x){
   const n = Number(x);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : NaN;
 }
 
-/** Per mostrar números amb decimals coherents */
-function fmtNum(x, decimals = 1){
-  const n = toNum(x);
-  if (n === null) return "—";
-  return n.toFixed(decimals);
+/**
+ * Protecció contra valors “bogeria” (p. ex. 68°C de cop)
+ * Ajusta si vols, però ajuda a evitar que un punt estrany trenqui l'escala.
+ */
+function clampPlausible(val, min, max){
+  const n = Number(val);
+  if (!Number.isFinite(n)) return NaN;
+  if (n < min || n > max) return NaN;
+  return n;
 }
 
-/** Construeix un gràfic Chart.js */
-function buildChart(canvasId, labels, values){
+async function loadHistory(){
+  const url = `${HISTORY_URL}?t=${Date.now()}`; // evita cache
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("No puc carregar history.json");
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error("history.json no és una llista");
+  return data;
+}
+
+function renderCurrent(last){
+  const temp = clampPlausible(last.temp_c, -30, 55);
+  const hum  = clampPlausible(last.hum_pct, 0, 100);
+  const dew  = clampPlausible(last.dew_c, -40, 40);
+
+  const wind = clampPlausible(last.wind_kmh, 0, 250);
+  const gust = clampPlausible(last.gust_kmh, 0, 300);
+
+  const dirDeg = toFiniteNumber(last.wind_dir);
+
+  const rainDay  = clampPlausible(last.rain_day_mm, 0, 1000);
+  const rainRate = clampPlausible(last.rain_rate_mmh, 0, 500);
+
+  setText("temp", Number.isFinite(temp) ? temp.toFixed(2) : "—");
+  setText("hum",  Number.isFinite(hum)  ? hum.toFixed(0) : "—");
+  setText("wind", Number.isFinite(wind) ? wind.toFixed(1) : "—");
+  setText("rainDay", Number.isFinite(rainDay) ? rainDay.toFixed(1) : "0.0");
+
+  setText("tempSub", Number.isFinite(dew) ? `Punt de rosada: ${dew.toFixed(2)} °C` : "—");
+  setText("dewSub",  Number.isFinite(dew) ? `Punt de rosada: ${dew.toFixed(2)} °C` : "—");
+
+  const dirTxt = Number.isFinite(dirDeg) ? `${degToCardinal(dirDeg)} (${dirDeg.toFixed(0)}º)` : "—";
+  const gustTxt = Number.isFinite(gust) ? `${gust.toFixed(1)} km/h` : "—";
+
+  setText("gustSub", `Ratxa: ${gustTxt} · Dir: ${dirTxt}`);
+  setText("rainRateSub", `Intensitat: ${Number.isFinite(rainRate) ? rainRate.toFixed(1) : "0.0"} mm/h`);
+
+  setText("lastUpdated", `Actualitzat: ${fmtTime(last.ts)}`);
+}
+
+function ensureChart(canvasId, label, labels, values){
   const ctx = document.getElementById(canvasId);
   if (!ctx) return null;
 
-  return new Chart(ctx, {
+  const config = {
     type: "line",
     data: {
       labels,
       datasets: [{
+        label,
         data: values,
         tension: 0.25,
         pointRadius: 0,
-        borderWidth: 2
+        borderWidth: 2,
+        spanGaps: false
       }]
     },
     options: {
@@ -68,117 +108,54 @@ function buildChart(canvasId, labels, values){
         y: { ticks: { maxTicksLimit: 6 } }
       }
     }
-  });
-}
-
-/** Carrega history.json evitant cache */
-async function loadHistory(){
-  const url = `${HISTORY_URL}?t=${Date.now()}`; // cache-buster
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error("No puc carregar history.json");
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error("history.json no és una llista");
-  return data;
-}
-
-/** Normalitza wind_dir: pot venir com número, string o objecte (value/unit) */
-function normalizeWindDir(wind_dir){
-  if (wind_dir == null) return { deg: null, card: "—", label: "—" };
-
-  // Si ve com objecte {value:"341", unit:"º", ...}
-  if (typeof wind_dir === "object" && wind_dir !== null) {
-    const v = wind_dir.value ?? wind_dir.deg ?? null;
-    const deg = toNum(v);
-    return {
-      deg,
-      card: degToCardinal(deg),
-      label: deg === null ? "—" : `${deg}º`
-    };
-  }
-
-  // Si ve com string o número
-  const deg = toNum(wind_dir);
-  return {
-    deg,
-    card: degToCardinal(deg),
-    label: deg === null ? "—" : `${deg}º`
   };
+
+  return new Chart(ctx, config);
 }
 
-/** Renderitza la targeta "current" */
-function renderCurrent(last){
-  // Cards principals
-  setText("temp", last?.temp_c == null ? "—" : fmtNum(last.temp_c, 2));
-  setText("hum",  last?.hum_pct == null ? "—" : fmtNum(last.hum_pct, 0));
-  setText("wind", last?.wind_kmh == null ? "—" : fmtNum(last.wind_kmh, 1));
-  setText("rainDay", last?.rain_day_mm == null ? "0.0" : fmtNum(last.rain_day_mm, 1));
-
-  // Subtexts
-  const dew = (last?.dew_c == null) ? "—" : `${fmtNum(last.dew_c, 2)} °C`;
-  setText("tempSub", last?.dew_c != null ? `Punt de rosada: ${dew}` : "—");
-  setText("dewSub",  last?.dew_c != null ? `Punt de rosada: ${dew}` : "—");
-
-  const gustTxt = (last?.gust_kmh == null) ? "N/D" : fmtNum(last.gust_kmh, 1);
-  const dir = normalizeWindDir(last?.wind_dir);
-
-  setText("gustSub", `Ratxa: ${gustTxt} km/h · Dir: ${dir.card} (${dir.label})`);
-
-  const rr = (last?.rain_rate_mmh == null) ? "0.0" : fmtNum(last.rain_rate_mmh, 1);
-  setText("rainRateSub", `Intensitat: ${rr} mm/h`);
-
-  // Timestamp
-  setText("lastUpdated", `Actualitzat: ${fmtTime(last?.ts)}`);
+function updateChart(chart, labels, values){
+  if (!chart) return;
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = values;
+  chart.update("none");
 }
 
-/** Renderitza gràfiques últimes 24h */
 function renderCharts(history){
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const last24 = history.filter(p => toNum(p?.ts) !== null && p.ts >= cutoff);
+  const cutoff = Date.now() - 24*60*60*1000;
+  const last24 = history.filter(p => Number(p.ts) >= cutoff);
 
-  // Etiquetes i dades (si hi ha nulls, Chart.js ho pot representar amb trams tallats)
-  const labels = last24.map(p =>
-    new Date(p.ts).toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" })
-  );
+  // Labels: hora:minut
+  const labels = last24.map(p => {
+    const d = new Date(Number(p.ts));
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" });
+  });
 
-  const temps = last24.map(p => (p?.temp_c == null ? null : toNum(p.temp_c)));
-  const hums  = last24.map(p => (p?.hum_pct == null ? null : toNum(p.hum_pct)));
+  // Convertim a NaN si falta o si és absurd -> Chart.js fa “gaps” i NO rebenta escales
+  const temps = last24.map(p => clampPlausible(p.temp_c, -30, 55));
+  const hums  = last24.map(p => clampPlausible(p.hum_pct, 0, 100));
 
-  if (chartTemp) { chartTemp.destroy(); chartTemp = null; }
-  if (chartHum)  { chartHum.destroy();  chartHum  = null; }
+  // Peu de gràfic
+  const tValid = temps.filter(Number.isFinite);
+  const hValid = hums.filter(Number.isFinite);
 
-  chartTemp = buildChart("chartTemp", labels, temps);
-  chartHum  = buildChart("chartHum", labels, hums);
-}
+  setText("tempFoot", tValid.length ? `Min: ${Math.min(...tValid).toFixed(1)} · Max: ${Math.max(...tValid).toFixed(1)}` : "Sense dades recents");
+  setText("humFoot",  hValid.length ? `Min: ${Math.min(...hValid).toFixed(0)} · Max: ${Math.max(...hValid).toFixed(0)}` : "Sense dades recents");
 
-/** Refresc complet (dades + gràfiques) */
-async function refresh(){
-  if (refreshing) return;
-  refreshing = true;
+  // Crea o actualitza
+  if (!chartTemp) {
+    chartTemp = ensureChart("chartTemp", "Temperatura", labels, temps);
+    // dona al canvas una alçada mínima via JS per mòbil (Chart.js + CSS)
+    document.getElementById("chartTemp").parentElement.style.height = "220px";
+  } else {
+    updateChart(chartTemp, labels, temps);
+  }
 
-  try{
-    const history = await loadHistory();
-    if (history.length === 0) {
-      setText("lastUpdated", "Encara sense dades (espera la primera actualització)");
-      return;
-    }
-    const last = history[history.length - 1];
-    renderCurrent(last);
-    renderCharts(history);
-  } catch (e){
-    setText("lastUpdated", "Error carregant dades");
-    console.error(e);
-  } finally {
-    refreshing = false;
+  if (!chartHum) {
+    chartHum = ensureChart("chartHum", "Humitat", labels, hums);
+    document.getElementById("chartHum").parentElement.style.height = "220px";
+  } else {
+    updateChart(chartHum, labels, hums);
   }
 }
 
-/** Init */
-(function init(){
-  setText("year", String(new Date().getFullYear()));
-
-  // Primera càrrega immediata
-  refresh();
-
-  // Auto-refresh (recomanat 60–120s). Aquí: 60s
-  setInterval(refresh, 60_000);
-})();
+async function
