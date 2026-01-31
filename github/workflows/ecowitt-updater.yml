@@ -2,133 +2,87 @@ name: Ecowitt updater
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"   # cada 5 minuts
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: ecowitt-updater
-  cancel-in-progress: true
 
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install requests
         run: pip install requests
 
-      - name: Fetch Ecowitt and append history.json
+      - name: Fetch Ecowitt data
         env:
-          APP_KEY: ${{ secrets.ECOWITT_APPLICATION_KEY }}
+          APP_KEY: ${{ secrets.ECOWITT_APP_KEY }}
           API_KEY: ${{ secrets.ECOWITT_API_KEY }}
           MAC: ${{ secrets.ECOWITT_MAC }}
         run: |
-          python - << 'PY'
-          import json, time, os
-          import requests
+          python << 'PY'
+          import json, os, time, requests
 
           url = "https://api.ecowitt.net/api/v3/device/real_time"
           params = {
-            "application_key": os.environ["APP_KEY"],
-            "api_key": os.environ["API_KEY"],
-            "mac": os.environ["MAC"],
-            "call_back": "all"
+              "application_key": os.environ["APP_KEY"],
+              "api_key": os.environ["API_KEY"],
+              "mac": os.environ["MAC"],
+              "call_back": "all"
           }
 
           r = requests.get(url, params=params, timeout=30)
           r.raise_for_status()
           j = r.json()
 
-          # --- Helpers robustos (Ecowitt sovint retorna {value, unit, time}) ---
-          def deep_get(d, path):
-            cur = d
-            for k in path:
-              if isinstance(cur, dict) and k in cur:
-                cur = cur[k]
-              else:
-                return None
-            return cur
+          def g(path):
+              cur = j
+              for p in path:
+                  if isinstance(cur, dict) and p in cur:
+                      cur = cur[p]
+                  else:
+                      return None
+              return cur
 
-          def as_number(x):
-            # x pot ser: 12.3, "12.3", {"value":"12.3","unit":"C","time":"..."}
-            if isinstance(x, dict):
-              x = x.get("value")
-            try:
-              return round(float(x), 2)
-            except Exception:
-              return None
-
-          base = j.get("data", j)
-          ts = int(time.time() * 1000)
-
-          # Prova camins habituals (si un no existeix, en prova un altre)
-          temp_c = as_number(deep_get(base, ["outdoor", "temperature"])) or as_number(deep_get(base, ["temp"]))
-          hum_pct = as_number(deep_get(base, ["outdoor", "humidity"])) or as_number(deep_get(base, ["humidity"]))
-          dew_c  = as_number(deep_get(base, ["outdoor", "dew_point"])) or as_number(deep_get(base, ["dew_point"]))
-
-          wind_kmh = as_number(deep_get(base, ["wind", "wind_speed"])) or as_number(deep_get(base, ["wind_speed"]))
-          gust_kmh = as_number(deep_get(base, ["wind", "gust"])) or as_number(deep_get(base, ["gust"]))
-          wind_dir = as_number(deep_get(base, ["wind", "wind_direction"])) or as_number(deep_get(base, ["wind_direction"]))
-
-          # Pluja: depèn molt del sensor / model
-          rain_day = (
-            as_number(deep_get(base, ["rainfall", "daily"])) or
-            as_number(deep_get(base, ["rainfall", "day"])) or
-            as_number(deep_get(base, ["rain_day"]))
-          )
-          rain_rate = (
-            as_number(deep_get(base, ["rainfall", "rate"])) or
-            as_number(deep_get(base, ["rain_rate"]))
-          )
+          def v(path):
+              o = g(path)
+              return float(o["value"]) if isinstance(o, dict) and "value" in o else None
 
           point = {
-            "ts": ts,
-            "temp_c": temp_c,
-            "hum_pct": hum_pct,
-            "dew_c": dew_c,
-            "wind_kmh": wind_kmh,
-            "gust_kmh": gust_kmh,
-            "wind_dir": wind_dir,     # guarda com a número (graus)
-            "rain_day_mm": rain_day,
-            "rain_rate_mmh": rain_rate
+              "ts": int(time.time()*1000),
+              "temp_c": v(["data","outdoor","temperature"]),
+              "hum_pct": v(["data","outdoor","humidity"]),
+              "dew_c": v(["data","outdoor","dew_point"]),
+              "wind_kmh": v(["data","wind","wind_speed"]),
+              "gust_kmh": v(["data","wind","wind_gust"]),
+              "wind_dir": v(["data","wind","wind_direction"]),
+              "rain_day_mm": v(["data","rainfall","daily"]),
+              "rain_rate_mmh": v(["data","rainfall","rain_rate"])
           }
 
-          path = "MeteoCandela/data/history.json"
+          path = "data/history.json"
           try:
-            with open(path, "r", encoding="utf-8") as f:
-              hist = json.load(f)
-            if not isinstance(hist, list):
+              hist = json.load(open(path))
+          except:
               hist = []
-          except FileNotFoundError:
-            hist = []
 
           hist.append(point)
+          hist = hist[-500:]
 
-          # Mantén aprox 48h si fas cada 5 min: 48*60/5=576 punts. En guardem 700.
-          if len(hist) > 700:
-            hist = hist[-700:]
-
-          with open(path, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False)
-
-          print("Appended:", point)
+          json.dump(hist, open(path,"w"), indent=2)
           PY
 
-      - name: Commit & push
+      - name: Commit data
         run: |
           git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git add MeteoCandela/data/history.json
-          git commit -m "Update history.json" || echo "No changes"
-          git pull --rebase
+          git config user.email "actions@github.com"
+          git add data/history.json
+          git commit -m "Update weather data" || echo "No changes"
           git push
