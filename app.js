@@ -31,6 +31,19 @@
     }).format(d);
   }
 
+  // Converteix graus a punt cardinal (N, NNE, NE, ...)
+  function degToCompass(deg) {
+    if (deg == null || Number.isNaN(Number(deg))) return "—";
+    const dirs = [
+      "N","NNE","NE","ENE",
+      "E","ESE","SE","SSE",
+      "S","SSW","SW","WSW",
+      "W","WNW","NW","NNW"
+    ];
+    const i = Math.round(Number(deg) / 22.5) % 16;
+    return dirs[i];
+  }
+
   function normalizeRow(r) {
     // TEMPERATURA (prioritza sempre temp_c)
     let tempC = (r.temp_c ?? null);
@@ -232,15 +245,25 @@
         last.dew_c == null ? "Punt de rosada: —" : `Punt de rosada: ${fmt1(last.dew_c)} °C`;
     }
 
-    const dir = last.wind_dir == null ? "—" : String(last.wind_dir);
+    // Direcció: graus + símbol + cardinal
+    let dirTxt = "—";
+    if (last.wind_dir != null && last.wind_dir !== "") {
+      const deg = Number(last.wind_dir);
+      if (!Number.isNaN(deg)) dirTxt = `${deg}° (${degToCompass(deg)})`;
+    }
+
     if ($("gustSub")) {
       $("gustSub").textContent =
-        last.gust_kmh == null ? `Ratxa: — · Dir: ${dir}` : `Ratxa: ${fmt1(last.gust_kmh)} km/h · Dir: ${dir}`;
+        last.gust_kmh == null
+          ? `Ratxa: — · Dir: ${dirTxt}`
+          : `Ratxa: ${fmt1(last.gust_kmh)} km/h · Dir: ${dirTxt}`;
     }
 
     if ($("rainRateSub")) {
       $("rainRateSub").textContent =
-        last.rain_rate_mmh == null ? "Intensitat: —" : `Intensitat: ${fmt1(last.rain_rate_mmh)} mm/h`;
+        last.rain_rate_mmh == null
+          ? "Intensitat de pluja: —"
+          : `Intensitat de pluja: ${fmt1(last.rain_rate_mmh)} mm/h`;
     }
 
     $("lastUpdated").textContent = `Actualitzat: ${fmtDate(last.ts)}`;
