@@ -1,0 +1,85 @@
+name: Ecowitt updater
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: Fetch Ecowitt
+        env:
+          APP_KEY: ${{ secrets.ECOWITT_APP_KEY }}
+          API_KEY: ${{ secrets.ECOWITT_API_KEY }}
+          MAC: ${{ secrets.ECOWITT_MAC }}
+        run: |
+          python << 'PY'
+          import json, os, time, requests
+
+          url = "https://api.ecowitt.net/api/v3/device/real_time"
+          params = {
+              "application_key": os.environ["APP_KEY"],
+              "api_key": os.environ["API_KEY"],
+              "mac": os.environ["MAC"],
+              "call_back": "all"
+          }
+
+          r = requests.get(url, params=params, timeout=30)
+          r.raise_for_status()
+          j = r.json()
+
+          def g(path):
+              cur = j
+              for p in path:
+                  if isinstance(cur, dict) and p in cur:
+                      cur = cur[p]
+                  else:
+                      return None
+              return cur
+
+          def v(path):
+              o = g(path)
+              return float(o["value"]) if isinstance(o, dict) and "value" in o else None
+
+          point = {
+              "ts": int(time.time()*1000),
+              "temp_c": v(["data","outdoor","temperature"]),
+              "hum_pct": v(["data","outdoor","humidity"]),
+              "dew_c": v(["data","outdoor","dew_point"]),
+              "wind_kmh": v(["data","wind","wind_speed"]),
+              "gust_kmh": v(["data","wind","wind_gust"]),
+              "wind_dir": v(["data","wind","wind_direction"]),
+              "rain_day_mm": v(["data","rainfall","daily"]),
+              "rain_rate_mmh": v(["data","rainfall","rain_rate"])
+          }
+
+          path = "data/history.json"
+          try:
+              hist = json.load(open(path))
+          except:
+              hist = []
+
+          hist.append(point)
+          hist = hist[-500:]
+
+          json.dump(hist, open(path,"w"), indent=2)
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data/history.json
+          git commit -m "Update weather data" || echo "No changes"
+          git push
