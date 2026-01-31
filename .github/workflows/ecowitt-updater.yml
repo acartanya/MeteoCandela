@@ -42,94 +42,140 @@ jobs:
           import json, os, time
           from datetime import datetime, timezone
           from pathlib import Path
-          import urllib.request
-          import urllib.parse
+          import urllib.request, urllib.parse
 
-          # ====== RUTES AL ROOT (important) ======
-          BASE = Path(".")
-          HISTORY_PATH = BASE / "data" / "history.json"
-          HEARTBEAT_DIR = BASE / "heartbeat"
+          # ===== RUTES (ROOT DEL REPO) =====
+          HISTORY_PATH = Path("data") / "history.json"
+          HEARTBEAT_DIR = Path("heartbeat")
           HEARTBEAT_PATH = HEARTBEAT_DIR / "heartbeat.json"
-          # ======================================
+          # =================================
 
           app_key = os.getenv("ECOWITT_APPLICATION_KEY")
           api_key = os.getenv("ECOWITT_API_KEY")
           mac = os.getenv("ECOWITT_MAC")
 
           if not (app_key and api_key and mac):
-            raise SystemExit("Falten secrets: ECOWITT_APPLICATION_KEY / ECOWITT_API_KEY / ECOWITT_MAC")
+              raise SystemExit("Falten secrets: ECOWITT_APPLICATION_KEY / ECOWITT_API_KEY / ECOWITT_MAC")
 
+          def fnum(x):
+              try:
+                  return float(x)
+              except Exception:
+                  return None
+
+          def f_to_c(f):
+              try:
+                  return (float(f) - 32.0) * 5.0 / 9.0
+              except Exception:
+                  return None
+
+          # Endpoint Ecowitt API v3
           base_url = "https://api.ecowitt.net/api/v3/device/real_time"
           params = {
-            "application_key": app_key,
-            "api_key": api_key,
-            "mac": mac,
-            "call_back": "all"
+              "application_key": app_key,
+              "api_key": api_key,
+              "mac": mac,
+              "call_back": "all"
           }
           url = base_url + "?" + urllib.parse.urlencode(params)
 
           with urllib.request.urlopen(url, timeout=20) as r:
-            payload = json.loads(r.read().decode("utf-8"))
+              payload = json.loads(r.read().decode("utf-8"))
 
           data = payload.get("data", {}) if isinstance(payload, dict) else {}
 
           def pick(*keys):
-            cur = data
-            for k in keys:
-              if not isinstance(cur, dict) or k not in cur: return None
-              cur = cur[k]
-            return cur
+              cur = data
+              for k in keys:
+                  if not isinstance(cur, dict) or k not in cur:
+                      return None
+                  cur = cur[k]
+              return cur
 
-          def fnum(x):
-            try:
-              return float(x)
-            except Exception:
-              return None
+          # --- TEMPERATURA/HUMITAT/ROSADA ---
+          # Ecowitt sovint envia aquests valors en Fahrenheit a l'API.
+          temp_raw = (
+              fnum(pick("outdoor", "temperature", "value")) or
+              fnum(pick("temp", "value")) or
+              fnum(pick("temperature", "value"))
+          )
+          hum_pct = (
+              fnum(pick("outdoor", "humidity", "value")) or
+              fnum(pick("humidity", "value"))
+          )
 
-          temp_c = fnum(pick("outdoor", "temperature", "value")) or fnum(pick("temp", "value")) or fnum(pick("temperature", "value"))
-          hum_pct = fnum(pick("outdoor", "humidity", "value")) or fnum(pick("humidity", "value"))
-          dew_c = fnum(pick("outdoor", "dew_point", "value")) or fnum(pick("dew_point", "value"))
+          dew_raw = (
+              fnum(pick("outdoor", "dew_point", "value")) or
+              fnum(pick("dew_point", "value"))
+          )
 
-          wind_kmh = fnum(pick("wind_speed", "value")) or fnum(pick("wind", "wind_speed", "value"))
-          gust_kmh = fnum(pick("wind_gust", "value")) or fnum(pick("wind", "wind_gust", "value"))
-          wind_dir = pick("wind_direction", "value") or pick("wind", "wind_direction", "value")
+          temp_c = f_to_c(temp_raw) if temp_raw is not None else None
+          dew_c  = f_to_c(dew_raw) if dew_raw is not None else None
 
-          rain_day_mm = fnum(pick("rainfall_daily", "value")) or fnum(pick("rainfall", "daily", "value"))
-          rain_rate_mmh = fnum(pick("rain_rate", "value")) or fnum(pick("rainfall", "rate", "value"))
+          # --- VENT (normalment ja ve en km/h, però ho deixem tolerant) ---
+          wind_kmh = (
+              fnum(pick("wind_speed", "value")) or
+              fnum(pick("wind", "wind_speed", "value"))
+          )
+          gust_kmh = (
+              fnum(pick("wind_gust", "value")) or
+              fnum(pick("wind", "wind_gust", "value"))
+          )
+          wind_dir = (
+              pick("wind_direction", "value") or
+              pick("wind", "wind_direction", "value")
+          )
+
+          # --- PLUJA (mm) ---
+          rain_day_mm = (
+              fnum(pick("rainfall_daily", "value")) or
+              fnum(pick("rainfall", "daily", "value"))
+          )
+          rain_rate_mmh = (
+              fnum(pick("rain_rate", "value")) or
+              fnum(pick("rainfall", "rate", "value"))
+          )
 
           now_ms = int(time.time() * 1000)
+
           row = {
-            "ts": now_ms,
-            "temp_c": temp_c,
-            "hum_pct": hum_pct,
-            "dew_c": dew_c,
-            "wind_kmh": wind_kmh,
-            "gust_kmh": gust_kmh,
-            "wind_dir": str(wind_dir) if wind_dir is not None else None,
-            "rain_day_mm": rain_day_mm,
-            "rain_rate_mmh": rain_rate_mmh,
+              "ts": now_ms,
+              "temp_c": temp_c,
+              "hum_pct": hum_pct,
+              "dew_c": dew_c,
+              "wind_kmh": wind_kmh,
+              "gust_kmh": gust_kmh,
+              "wind_dir": str(wind_dir) if wind_dir is not None else None,
+              "rain_day_mm": rain_day_mm,
+              "rain_rate_mmh": rain_rate_mmh,
           }
 
+          # --- HISTÒRIC 24h ---
           HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
 
           if HISTORY_PATH.exists():
-            try:
-              hist = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
-              if not isinstance(hist, list): hist = []
-            except Exception:
-              hist = []
+              try:
+                  hist = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+                  if not isinstance(hist, list):
+                      hist = []
+              except Exception:
+                  hist = []
           else:
-            hist = []
+              hist = []
 
           hist.append(row)
 
-          cutoff = now_ms - 24*60*60*1000
+          cutoff = now_ms - 24 * 60 * 60 * 1000
           hist = [h for h in hist if isinstance(h, dict) and h.get("ts", 0) >= cutoff]
 
           HISTORY_PATH.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
 
+          # --- HEARTBEAT ---
           HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
-          hb = {"run_ts": now_ms, "run_iso_utc": datetime.now(timezone.utc).isoformat()}
+          hb = {
+              "run_ts": now_ms,
+              "run_iso_utc": datetime.now(timezone.utc).isoformat()
+          }
           HEARTBEAT_PATH.write_text(json.dumps(hb, ensure_ascii=False), encoding="utf-8")
 
           print("OK appended:", row)
