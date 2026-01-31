@@ -97,13 +97,11 @@
     const wind = r24.map(r => r.wind_kmh);
     const gust = r24.map(r => r.gust_kmh);
 
-    // Opcions comunes + TOOLTIP només valor i unitat
-    // (unitat definida per dataset via __unit)
+    // Opcions comunes + TOOLTIP només valor i unitat (sense hora)
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
 
-      // Millor experiència mòbil: no cal tocar el punt exacte
       interaction: {
         mode: "nearest",
         intersect: false,
@@ -114,15 +112,15 @@
         legend: { display: false },
         tooltip: {
           enabled: true,
-          displayColors: false,   // treu el quadradet de color
+          displayColors: false,
           callbacks: {
-            title: () => "",      // NO hora/data
+            title: () => "",
             label: (ctx) => {
               const v = ctx.parsed?.y;
               if (v == null) return "—";
               const unit = ctx.dataset?.__unit || "";
-              // Espai davant la unitat només si n'hi ha
-              return Number(v).toFixed(1) + (unit ? ` ${unit}` : "");
+              const prefix = ctx.dataset?.__prefix || "";
+              return `${prefix}${Number(v).toFixed(1)}${unit ? ` ${unit}` : ""}`;
             }
           }
         }
@@ -146,6 +144,7 @@
         datasets: [{
           data: temp,
           __unit: "°C",
+          __prefix: "",
           tension: 0.25,
           pointRadius: 2,
           pointHoverRadius: 7,
@@ -165,6 +164,7 @@
         datasets: [{
           data: hum,
           __unit: "%",
+          __prefix: "",
           tension: 0.25,
           pointRadius: 2,
           pointHoverRadius: 7,
@@ -179,7 +179,7 @@
       }
     });
 
-    // Vent + Ratxa (mateix estil, coherent)
+    // Vent + Ratxa
     const windCanvas = $("chartWind");
     if (windCanvas) {
       window.__chartWind = new Chart(windCanvas, {
@@ -189,24 +189,29 @@
           datasets: [
             // Vent sostingut (àrea)
             {
+              label: "vent",
               data: wind,
               __unit: "km/h",
+              __prefix: "Vent: ",
               tension: 0.25,
               pointRadius: 2,
-              pointHoverRadius: 7,
+              pointHoverRadius: 6,
               pointHitRadius: 12,
-              borderWidth: 2,
+              borderWidth: 2.5,
               fill: true
             },
-            // Ratxa (línia)
+            // Ratxa (línia discontínua, més fina)
             {
+              label: "ratxa",
               data: gust,
               __unit: "km/h",
+              __prefix: "Ratxa: ",
               tension: 0.25,
               pointRadius: 2,
-              pointHoverRadius: 7,
+              pointHoverRadius: 6,
               pointHitRadius: 12,
               borderWidth: 2,
+              borderDash: [6, 4],
               fill: false
             }
           ]
